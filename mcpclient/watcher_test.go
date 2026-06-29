@@ -37,6 +37,11 @@ transport = "streamable-http"
 	}
 
 	client := New(registry, onToolsChanged)
+	client.onReload = func() {
+		mu.Lock()
+		changedCount++
+		mu.Unlock()
+	}
 
 	// Stub out the Connect function to avoid actual network dialing in tests
 	// We want to test the reload mechanics and file watcher triggers.

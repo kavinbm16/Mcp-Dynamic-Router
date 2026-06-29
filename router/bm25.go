@@ -28,6 +28,9 @@ func tokenize(text string) []string {
 	return result
 }
 
+// stem implements a lightweight English suffix-stripping stemmer.
+// It normalizes common verb and noun inflections (e.g. -ing, -ed, -es, -s)
+// to their base forms, improving search recall with zero external dependencies.
 func stem(word string) string {
 	if len(word) <= 3 {
 		return word

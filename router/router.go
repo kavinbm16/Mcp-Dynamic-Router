@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -223,6 +224,10 @@ func (r *Router) semanticScores(ctx context.Context, query string, vectors [][]f
 	return scores, queryVector, true, nil
 }
 
+// embedBatch resolves embeddings for a list of documents.
+// It checks the in-memory cache to skip already computed documents,
+// batches the misses, requests their embeddings from the embedder,
+// and saves the results back to the cache.
 func (r *Router) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	r.cacheMu.Lock()
 	if r.embedCache == nil {
@@ -240,6 +245,8 @@ func (r *Router) embedBatch(ctx context.Context, texts []string) ([][]float32, e
 		}
 	}
 	r.cacheMu.Unlock()
+
+	log.Printf("[Embedding Cache] Batch requested: total=%d, hits=%d, misses=%d", len(texts), len(texts)-len(misses), len(misses))
 
 	if len(misses) > 0 {
 		vectors, err := r.embedder.Embed(ctx, misses)

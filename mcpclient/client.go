@@ -41,8 +41,8 @@ type session struct {
 	session *mcp.ClientSession
 }
 
-// Client owns reusable Streamable HTTP sessions and mirrors discovered tools
-// into the router registry. It intentionally contains no ranking policy.
+// Client manages active connections to MCP servers, mirrors their tools to the
+// registry, and watches the config file for hot-reloads.
 type Client struct {
 	registry           *router.Registry
 	onToolsChanged     func(context.Context) error
@@ -50,10 +50,11 @@ type Client struct {
 	sessions           map[string]*session
 	elicitation        ElicitationConfig
 	elicitationHandler ElicitationHandler
-	configPath         string
-	lastModTime        time.Time
-	watcherCancel      context.CancelFunc
-	watcherWait        sync.WaitGroup
+	configPath         string             // Path to the mcp.toml file
+	lastModTime        time.Time          // Last recorded modification time of the config
+	watcherCancel      context.CancelFunc // Cancels the background file watcher goroutine
+	watcherWait        sync.WaitGroup     // Coordinates watcher shutdown
+	onReload           func()             // Test hook called after checkConfigChanges reloads config
 }
 
 func New(registry *router.Registry, onToolsChanged func(context.Context) error, options ...Option) *Client {
@@ -96,6 +97,7 @@ func (c *Client) ConnectFile(ctx context.Context, configPath string) (ConnectRep
 		}
 	}
 	sort.Strings(report.Connected)
+	c.startWatcher(configPath)
 	if len(report.Connected) == 0 {
 		return report, fmt.Errorf("could not connect any configured MCP server")
 	}
@@ -104,7 +106,6 @@ func (c *Client) ConnectFile(ctx context.Context, configPath string) (ConnectRep
 			return report, fmt.Errorf("build routing index: %w", err)
 		}
 	}
-	c.startWatcher(configPath)
 	return report, nil
 }
 
@@ -206,6 +207,8 @@ func (c *Client) Call(ctx context.Context, tool router.Tool, arguments map[strin
 	return result, nil
 }
 
+// Close terminates all active server connections, cancels the background config
+// file watcher, and waits for its goroutine to safely exit.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.watcherCancel != nil {
@@ -214,10 +217,16 @@ func (c *Client) Close() error {
 	c.mu.Unlock()
 	c.watcherWait.Wait()
 
+	return c.closeSessions()
+}
+
+// closeSessions closes active connections to all servers without stopping the config watcher.
+func (c *Client) closeSessions() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var first error
 	for name, holder := range c.sessions {
+		log.Printf("[MCP Client] Closing connection session for server %q", name)
 		if err := holder.session.Close(); err != nil && first == nil {
 			first = fmt.Errorf("close %s: %w", name, err)
 		}
@@ -226,6 +235,8 @@ func (c *Client) Close() error {
 	return first
 }
 
+// startWatcher registers the config file path and starts a background polling ticker
+// to detect configuration modifications and trigger hot-reloads.
 func (c *Client) startWatcher(configPath string) {
 	c.mu.Lock()
 	if c.watcherCancel != nil {
@@ -255,6 +266,8 @@ func (c *Client) startWatcher(configPath string) {
 	}()
 }
 
+// checkConfigChanges stats the configuration file, comparing its mod-time to our cached value.
+// If changed, it shuts down all connections and triggers a full client reconnect.
 func (c *Client) checkConfigChanges(ctx context.Context) {
 	c.mu.Lock()
 	path := c.configPath
@@ -266,7 +279,7 @@ func (c *Client) checkConfigChanges(ctx context.Context) {
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return
+		return // Ignore stat errors (e.g. temporary write lock)
 	}
 	if !info.ModTime().After(lastMod) {
 		return
@@ -276,9 +289,21 @@ func (c *Client) checkConfigChanges(ctx context.Context) {
 	c.lastModTime = info.ModTime()
 	c.mu.Unlock()
 
-	log.Printf("[MCP Watcher] Config file %s changed; performing full reload...", path)
-	_ = c.Close()
-	_, _ = c.ConnectFile(ctx, path)
+	log.Printf("[MCP Watcher] Config file %s modified; performing full hot-reload...", path)
+	_ = c.closeSessions()
+	_, reloadErr := c.ConnectFile(ctx, path)
+	if reloadErr != nil {
+		log.Printf("[MCP Watcher] Reload failed for config %s: %v", path, reloadErr)
+	} else {
+		log.Printf("[MCP Watcher] Reload succeeded. All connections refreshed.")
+	}
+
+	c.mu.Lock()
+	onReloadHook := c.onReload
+	c.mu.Unlock()
+	if onReloadHook != nil {
+		onReloadHook()
+	}
 }
 
 func (c *Client) get(serverName string) (*session, error) {
