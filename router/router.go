@@ -27,18 +27,25 @@ type compiledIndex struct {
 	domainTools   map[string][]int
 }
 
+type routeCacheEntry struct {
+	result    RouteResult
+	expiresAt time.Time
+}
+
 // Router is safe for concurrent Route calls. Refresh creates a new immutable
 // index and swaps it in only after compilation succeeds.
 type Router struct {
-	registry   *Registry
-	embedder   Embedder
-	reranker   Reranker
-	cfg        Config
-	mu         sync.RWMutex
-	index      *compiledIndex
-	sf         singleflight.Group
-	embedCache map[string][]float32
-	cacheMu    sync.Mutex
+	registry     *Registry
+	embedder     Embedder
+	reranker     Reranker
+	cfg          Config
+	mu           sync.RWMutex
+	index        *compiledIndex
+	sf           singleflight.Group
+	embedCache   map[string][]float32
+	cacheMu      sync.Mutex
+	routeCache   map[string]routeCacheEntry
+	routeCacheMu sync.RWMutex
 }
 
 func New(registry *Registry, embedder Embedder, cfg Config, options ...Option) *Router {
@@ -64,7 +71,19 @@ func New(registry *Registry, embedder Embedder, cfg Config, options ...Option) *
 	if cfg.RerankerWeight == 0 {
 		cfg.RerankerWeight = defaults.RerankerWeight
 	}
-	result := &Router{registry: registry, embedder: embedder, cfg: cfg, embedCache: make(map[string][]float32)}
+	if cfg.BM25FastPath == 0 {
+		cfg.BM25FastPath = defaults.BM25FastPath
+	}
+	if cfg.RouteCacheTTL == 0 {
+		cfg.RouteCacheTTL = defaults.RouteCacheTTL
+	}
+	result := &Router{
+		registry:   registry,
+		embedder:   embedder,
+		cfg:        cfg,
+		embedCache: make(map[string][]float32),
+		routeCache: make(map[string]routeCacheEntry),
+	}
 	for _, option := range options {
 		option(result)
 	}
@@ -124,42 +143,53 @@ func (r *Router) Refresh(ctx context.Context) error {
 }
 
 func (r *Router) Route(ctx context.Context, request RouteRequest) (RouteResult, error) {
+	query := strings.TrimSpace(request.Utterance)
+	contextStr := strings.TrimSpace(request.Context)
+	if cached, found := r.lookupRouteCache(query, contextStr); found {
+		return cached, nil
+	}
+
 	fragments := splitIntents(request.Utterance)
+	var finalResult RouteResult
+	var err error
 	if len(fragments) <= 1 {
-		return r.routeSingle(ctx, request)
-	}
-
-	log.Printf("[Router] Multi-intent detected: %d fragments: %v", len(fragments), fragments)
-
-	results := make([]RouteResult, len(fragments))
-	type routeJobResult struct {
-		index  int
-		result RouteResult
-		err    error
-	}
-	ch := make(chan routeJobResult, len(fragments))
-	var wg sync.WaitGroup
-	for idx, frag := range fragments {
-		wg.Add(1)
-		go func(i int, f string) {
-			defer wg.Done()
-			req := request
-			req.Utterance = f
-			res, err := r.routeSingle(ctx, req)
-			ch <- routeJobResult{index: i, result: res, err: err}
-		}(idx, frag)
-	}
-	wg.Wait()
-	close(ch)
-
-	for job := range ch {
-		if job.err != nil {
-			return RouteResult{}, job.err
+		finalResult, err = r.routeSingle(ctx, request)
+	} else {
+		log.Printf("[Router] Multi-intent detected: %d fragments: %v", len(fragments), fragments)
+		results := make([]RouteResult, len(fragments))
+		type routeJobResult struct {
+			index  int
+			result RouteResult
+			err    error
 		}
-		results[job.index] = job.result
+		ch := make(chan routeJobResult, len(fragments))
+		var wg sync.WaitGroup
+		for idx, frag := range fragments {
+			wg.Add(1)
+			go func(i int, f string) {
+				defer wg.Done()
+				req := request
+				req.Utterance = f
+				res, err := r.routeSingle(ctx, req)
+				ch <- routeJobResult{index: i, result: res, err: err}
+			}(idx, frag)
+		}
+		wg.Wait()
+		close(ch)
+
+		for job := range ch {
+			if job.err != nil {
+				return RouteResult{}, job.err
+			}
+			results[job.index] = job.result
+		}
+		finalResult = mergeRouteResults(results)
 	}
 
-	return mergeRouteResults(results), nil
+	if err == nil && finalResult.Decision != DecisionNoTool && r.cfg.RouteCacheTTL > 0 {
+		r.writeRouteCache(query, contextStr, finalResult, r.cfg.RouteCacheTTL)
+	}
+	return finalResult, err
 }
 
 func (r *Router) routeSingle(ctx context.Context, request RouteRequest) (RouteResult, error) {
@@ -176,6 +206,47 @@ func (r *Router) routeSingle(ctx context.Context, request RouteRequest) (RouteRe
 	}
 	if query == "" {
 		return RouteResult{Decision: DecisionNoTool, Reason: "empty utterance"}, nil
+	}
+
+	// Try BM25 Fast-Path
+	if r.cfg.BM25FastPath > 0 {
+		toolLexicalScores := index.toolLexical.scores(query)
+		bestIdx := -1
+		bestScore := -1.0
+		for idx, score := range toolLexicalScores {
+			if score > bestScore {
+				bestScore = score
+				bestIdx = idx
+			}
+		}
+
+		if bestIdx != -1 && bestScore >= r.cfg.BM25FastPath {
+			bestTool := index.tools[bestIdx]
+			candidate := Candidate{
+				Tool:         bestTool,
+				Score:        1.0,
+				LexicalScore: 1.0,
+				Rank:         1,
+			}
+			selectLatency := time.Since(started)
+			result := RouteResult{
+				Decision:   DecisionSelected,
+				Confidence: 1.0,
+				Margin:     1.0,
+				Candidates: []Candidate{candidate},
+				Reason:     fmt.Sprintf("fast-path: top candidate passed lexical BM25 threshold (score=%.2f >= %.2f)", bestScore, r.cfg.BM25FastPath),
+				Trace: Trace{
+					RegistryVersion: index.version,
+					Domains:         []string{ExtractDomain(bestTool)},
+					DomainLatency:   0,
+					SelectLatency:   selectLatency,
+					TotalLatency:    time.Since(started),
+					UsedEmbeddings:  false,
+					UsedReranker:    false,
+				},
+			}
+			return result, nil
+		}
 	}
 
 	domainStarted := time.Now()
@@ -524,4 +595,43 @@ func mergeRouteResults(results []RouteResult) RouteResult {
 	}
 
 	return merged
+}
+
+func normalizeCacheKey(query, context string) string {
+	q := strings.ToLower(strings.TrimSpace(query))
+	c := strings.ToLower(strings.TrimSpace(context))
+	return q + "::" + c
+}
+
+func (r *Router) lookupRouteCache(query, context string) (RouteResult, bool) {
+	r.routeCacheMu.RLock()
+	defer r.routeCacheMu.RUnlock()
+
+	key := normalizeCacheKey(query, context)
+	entry, found := r.routeCache[key]
+	if !found || time.Now().After(entry.expiresAt) {
+		return RouteResult{}, false
+	}
+	return entry.result, true
+}
+
+func (r *Router) writeRouteCache(query, context string, result RouteResult, ttl time.Duration) {
+	r.routeCacheMu.Lock()
+	defer r.routeCacheMu.Unlock()
+
+	// Simple eviction if cache gets too large
+	if len(r.routeCache) > 1000 {
+		now := time.Now()
+		for k, v := range r.routeCache {
+			if now.After(v.expiresAt) {
+				delete(r.routeCache, k)
+			}
+		}
+	}
+
+	key := normalizeCacheKey(query, context)
+	r.routeCache[key] = routeCacheEntry{
+		result:    result,
+		expiresAt: time.Now().Add(ttl),
+	}
 }

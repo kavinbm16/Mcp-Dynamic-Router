@@ -152,6 +152,97 @@ func TestValidateArguments(t *testing.T) {
 	}
 }
 
+type trackingEmbedder struct {
+	called bool
+}
+
+func (m *trackingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	m.called = true
+	res := make([][]float32, len(texts))
+	for i := range texts {
+		res[i] = make([]float32, 2)
+	}
+	return res, nil
+}
+
+func TestRouterBM25FastPath(t *testing.T) {
+	registry := NewRegistry()
+	tool := Tool{
+		ID:          "weather.get_forecast",
+		Server:      "weather",
+		Domain:      "weather",
+		Name:        "get_forecast",
+		Description: "get weather forecast",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	if err := registry.ReplaceServer("weather", []Tool{tool}); err != nil {
+		t.Fatal(err)
+	}
+
+	embedder := &trackingEmbedder{}
+	config := DefaultConfig()
+	config.BM25FastPath = 1.0 // Set very low so any query matching vocab triggers fast-path
+	router := New(registry, embedder, config)
+	if err := router.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := router.Route(context.Background(), RouteRequest{
+		Utterance: "get weather forecast",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Decision != DecisionSelected || result.Candidates[0].Tool.ID != "weather.get_forecast" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+
+	if embedder.called {
+		t.Fatal("expected embedder to NOT be called (fast-path should bypass semantic search)")
+	}
+}
+
+func TestRouterRouteCaching(t *testing.T) {
+	registry := NewRegistry()
+	tool := Tool{
+		ID:          "weather.get_forecast",
+		Server:      "weather",
+		Domain:      "weather",
+		Name:        "get_forecast",
+		Description: "get weather forecast",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	if err := registry.ReplaceServer("weather", []Tool{tool}); err != nil {
+		t.Fatal(err)
+	}
+
+	router := New(registry, nil, DefaultConfig())
+	if err := router.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// First query
+	res1, err := router.Route(context.Background(), RouteRequest{Utterance: "get weather forecast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Modify the registry and invalidate compilation index,
+	// verifying that we get the cached result.
+	router.registry.RemoveServer("weather")
+	router.index = nil // Invalidate to force crash if cache misses
+
+	res2, err := router.Route(context.Background(), RouteRequest{Utterance: "get weather forecast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res2.Decision != res1.Decision || len(res2.Candidates) != len(res1.Candidates) {
+		t.Fatalf("cached result mismatch: %+v vs %+v", res2, res1)
+	}
+}
+
 func weatherTool() Tool {
 	return Tool{ID: "weather.get_forecast", Server: "weather", Domain: "weather", Name: "get_forecast", Description: structured("weather", "Get the current weather and short-term forecast for a location", "the user asks about temperature, rain, or forecast", "location is a city; units is metric or imperial", "Does not provide historical climate data", "Will I need an umbrella in Bengaluru today?"), InputSchema: json.RawMessage(`{"type":"object","properties":{"location":{"type":"string","description":"City or place name"},"units":{"type":"string","description":"Unit system","enum":["metric","imperial"]}},"required":["location"],"additionalProperties":false}`), ReadOnly: true}
 }

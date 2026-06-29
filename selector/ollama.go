@@ -34,27 +34,25 @@ func (o *Ollama) Rerank(ctx context.Context, utterance, conversationContext stri
 	if err != nil {
 		return nil, err
 	}
-	prompt := "Select tools relevant to the request. Score every candidate from 0 to 1. Use limitations to reject superficially similar tools. Return JSON only.\nUtterance: " + utterance + "\nConversation context: " + conversationContext + "\nCandidates: " + string(encodedTools)
+	prompt := "Identify the single most relevant tool from the candidates list for the utterance. Return JSON only with the selected tool's id (or 'none' if no tools are relevant).\nUtterance: " + utterance + "\nConversation context: " + conversationContext + "\nCandidates: " + string(encodedTools)
 	requestBody := map[string]any{
 		"model":  o.Model,
 		"stream": false,
 		"format": map[string]any{
 			"type": "object",
-			"properties": map[string]any{"scores": map[string]any{
-				"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"tool_id": map[string]any{"type": "string"},
-						"score":   map[string]any{"type": "number"},
-					}, "required": []string{"tool_id", "score"},
-				},
-			}},
-			"required": []string{"scores"},
+			"properties": map[string]any{
+				"tool_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"tool_id"},
 		},
 		"messages": []map[string]string{
 			{"role": "system", "content": "You are a precise MCP tool selector."},
 			{"role": "user", "content": prompt},
 		},
-		"options": map[string]any{"temperature": 0},
+		"options": map[string]any{
+			"temperature": 0,
+			"num_predict": 35, // Limit output tokens to reduce latency
+		},
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
@@ -90,17 +88,14 @@ func (o *Ollama) Rerank(ctx context.Context, utterance, conversationContext stri
 		return nil, err
 	}
 	var selection struct {
-		Scores []struct {
-			ToolID string  `json:"tool_id"`
-			Score  float64 `json:"score"`
-		} `json:"scores"`
+		ToolID string `json:"tool_id"`
 	}
 	if err := json.Unmarshal([]byte(envelope.Message.Content), &selection); err != nil {
 		return nil, fmt.Errorf("decode selector output: %w", err)
 	}
-	result := make(map[string]float64, len(selection.Scores))
-	for _, score := range selection.Scores {
-		result[score.ToolID] = score.Score
+	result := make(map[string]float64)
+	if selection.ToolID != "" && selection.ToolID != "none" {
+		result[selection.ToolID] = 1.0
 	}
 	return result, nil
 }

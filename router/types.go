@@ -40,6 +40,8 @@ type Config struct {
 	MinMargin         float64
 	IncludeContext    bool
 	DescriptionPolicy DescriptionPolicy
+	BM25FastPath      float64
+	RouteCacheTTL     time.Duration
 }
 
 func DefaultConfig() Config {
@@ -54,6 +56,8 @@ func DefaultConfig() Config {
 		MinMargin:         0.06,
 		IncludeContext:    true,
 		DescriptionPolicy: DefaultDescriptionPolicy(),
+		BM25FastPath:      8.0,
+		RouteCacheTTL:     30 * time.Second,
 	}
 }
 
