@@ -685,24 +685,24 @@ async def setup_agent(ctx: agents.JobContext):
 | `cmd/router-audit/` | Description-quality CI gate. |
 | `cmd/router-eval/` | Accuracy, rejection, and latency evaluator. |
 
-## Design rules
+## 🎯 Core Tenets
 
-1. Descriptions are executable quality—not decoration.
-2. Retrieve broadly; reason narrowly.
-3. A partial transcript may prepare, never authorize.
-4. Abstention is better than a confident wrong action.
-5. Routing and execution remain separate policy boundaries.
-6. Every decision must be inspectable and benchmarkable.
+* **Quality Descriptions:** Tool descriptions are treated as executable code, not decoration.
+* **Broad Retrieval, Narrow Reasoning:** Cast a wide net during stage-1 retrieval, then prune aggressively.
+* **Stream Safety:** Partial transcripts only prefetch safe read-only tools; they never authorize mutations.
+* **Safe Abstention:** We prefer returning `clarify` or `no_tool` over executing a confident wrong action.
+* **Separation of Policy:** Routing decisions and tool execution remain separate boundaries.
+* **Inspectable & Benchmarkable:** Every routing path and latency budget must be fully auditable.
 
-## Next milestones
+## 🚀 Roadmap
 
-- Public speech-routing benchmark and confusion-set generator.
-- Held-out confidence calibration.
-- Schema-constrained argument binder and repair loop.
-- Multi-intent dependency DAG with parallel execution.
-- Provider examples for LiveKit, Pipecat, OpenAI Realtime, and Gemini Live.
-- OpenTelemetry and Prometheus instrumentation.
-- Voxa integration with time-to-tool-dispatch and perceived-latency measurements.
+* [ ] Public speech-routing benchmark & confusion-set generator.
+* [ ] Held-out confidence calibration.
+* [ ] Schema-constrained argument binder and self-repair loop.
+* [ ] Multi-intent dependency DAG with parallel execution.
+* [ ] Production integrations for LiveKit, Pipecat, OpenAI Realtime, and Gemini Live.
+* [ ] OpenTelemetry and Prometheus instrumentation.
+* [ ] Voxa integration with perceived-latency measurements.
 
 ## Contributing
 
