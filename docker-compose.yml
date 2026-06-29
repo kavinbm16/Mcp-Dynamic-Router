@@ -1,0 +1,32 @@
+services:
+  routerd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-dynamic-router
+    ports:
+      - "8090:8090"
+    volumes:
+      # Mount the production mcp config file from the host.
+      # Changes to this file will trigger automatic hot-reloads within 2 seconds.
+      - ./mcp.toml.example:/etc/routerd/mcp.toml:ro
+    # Optional environment variables if using remote LLM API providers or services
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    healthcheck:
+      # Alpine includes wget by default, making it ideal for the health check probe.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8090/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  # Note: In a real production deployment, your downstream MCP services 
+  # would also run here or in your wider cluster, e.g.:
+  #
+  # my-custom-mcp-service:
+  #   image: my-registry/mcp-service:latest
+  #   ports:
+  #     - "8080:8080"
+  #   restart: unless-stopped

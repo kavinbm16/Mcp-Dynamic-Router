@@ -582,6 +582,62 @@ Routes incremental user transcripts linked to a session.
 }
 ```
 *(Note: Sending a request with `"final": true` automatically closes the session on the server; unused sessions expire after 2 minutes.)*
+## Production Deployment & Sidecar Integration
+
+For production environments, the Dynamic Router (`routerd`) is designed to run as a lightweight containerized sidecar alongside your primary application agent or speech pipeline (e.g., inside the same Kubernetes Pod, ECS Task, or via Docker Compose).
+
+### 🐳 Containerization with Docker
+
+We provide a multi-stage [Dockerfile](file:///Users/kavin/Projects/MCP-Dynamic-router/Dockerfile) to package the daemon into a minimal, secure Alpine-based image.
+
+To build the image:
+```bash
+docker build -t mcp-dynamic-router:latest .
+```
+
+To run the container, mount your `mcp.toml` configuration file:
+```bash
+docker run -d \
+  -p 8090:8090 \
+  -v $(pwd)/mcp.toml:/etc/routerd/mcp.toml:ro \
+  mcp-dynamic-router:latest \
+  -listen 0.0.0.0:8090 \
+  -mcp /etc/routerd/mcp.toml
+```
+
+### ⛵ Docker Compose Orchestration
+
+For multi-service setups, define the router in your [docker-compose.yml](file:///Users/kavin/Projects/MCP-Dynamic-router/docker-compose.yml):
+```yaml
+services:
+  routerd:
+    build: .
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./mcp.toml:/etc/routerd/mcp.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8090/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+```
+
+### ⚙️ Production Operations & Best Practices
+
+1. **Zero-Downtime Config Hot-Reloading**
+   - The sidecar polls the configuration file mounted at `-mcp`.
+   - Modifying downstream servers or elicitation policies in `mcp.toml` (e.g., updating Kubernetes ConfigMaps) triggers a connection rebuild automatically **without restarting the sidecar**.
+2. **Health Probes**
+   - Configure orchestrator liveness and readiness probes to query `GET /healthz`. It returns `200 OK` when the sidecar is operational.
+3. **Security Boundaries**
+   - `routerd` does not implement TLS or API authentication itself.
+   - Keep it bound to `127.0.0.1` (default) if acting strictly as a pod-local sidecar, or deploy it behind an API gateway (e.g., Envoy or Traefik) if exposed across private networks.
+4. **Remote LLM / Search Settings**
+   - Point to a production Ollama service (`-ollama http://ollama-service:11434`) or implement custom Go embedders/rerankers if using cloud-hosted models (OpenAI, Gemini, Cohere, etc.) in production.
+
+---
 
 ## Integration Blueprints & Examples
 
