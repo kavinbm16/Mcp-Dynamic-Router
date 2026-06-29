@@ -7,6 +7,7 @@ import (
 	"github.com/kavinbm16/mcp-dynamic-router/mcpclient"
 	"github.com/kavinbm16/mcp-dynamic-router/router"
 	"github.com/kavinbm16/mcp-dynamic-router/streamrag"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Options struct {
@@ -55,6 +56,10 @@ func (a *App) Start(ctx context.Context) (mcpclient.ConnectReport, error) {
 
 func (a *App) Route(ctx context.Context, request router.RouteRequest) (router.RouteResult, error) {
 	return a.Router.Route(ctx, request)
+}
+
+func (a *App) Call(ctx context.Context, tool router.Tool, arguments map[string]any) (*mcp.CallToolResult, error) {
+	return a.MCP.Call(ctx, tool, arguments)
 }
 
 func (a *App) NewStream(options streamrag.Options, hooks streamrag.Hooks) *streamrag.Session {

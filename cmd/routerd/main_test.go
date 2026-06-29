@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	dynamicrouter "github.com/kavinbm16/mcp-dynamic-router"
+	"github.com/kavinbm16/mcp-dynamic-router/mcpclient"
 	"github.com/kavinbm16/mcp-dynamic-router/router"
 )
 
@@ -81,3 +84,157 @@ func testAPI(t *testing.T) *api {
 	}
 	return &api{app: app, sessions: make(map[string]*streamEntry)}
 }
+
+type jsonRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      any             `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type jsonRPCResponse struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      any    `json:"id"`
+	Result  any    `json:"result,omitempty"`
+	Error   any    `json:"error,omitempty"`
+}
+
+func TestExecuteEndpoint(t *testing.T) {
+	// Spin up mock MCP server
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var res jsonRPCResponse
+		res.JSONRPC = "2.0"
+		res.ID = req.ID
+
+		switch req.Method {
+		case "initialize":
+			res.Result = map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "mock-weather", "version": "1.0.0"},
+			}
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case "tools/list":
+			res.Result = map[string]any{
+				"tools": []map[string]any{
+					{
+						"name":        "forecast",
+						"description": "Domain: weather\nPurpose: Get a weather forecast.\nInvoke when: Call for weather.\nParameters:\n- location (string, required): city name.\nExample:\nUser: forecast Bengaluru",
+						"inputSchema": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"location": map[string]any{"type": "string"},
+							},
+							"required": []string{"location"},
+						},
+					},
+				},
+			}
+		case "tools/call":
+			var params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			}
+			json.Unmarshal(req.Params, &params)
+			if params.Name == "forecast" {
+				loc, _ := params.Arguments["location"].(string)
+				res.Result = map[string]any{
+					"content": []map[string]any{
+						{
+							"type": "text",
+							"text": fmt.Sprintf("The weather in %s is sunny", loc),
+						},
+					},
+				}
+			} else {
+				res.Error = map[string]any{"code": -32601, "message": "method not found"}
+			}
+		default:
+			res.Error = map[string]any{"code": -32601, "message": "method not found"}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(res)
+	}))
+	defer mockServer.Close()
+
+	// Initialize dynamic router
+	app := dynamicrouter.New(dynamicrouter.Options{})
+	defer app.Close()
+
+	// Connect to our mock server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := app.MCP.Connect(ctx, mcpclient.Server{
+		Name:      "weather",
+		URL:       mockServer.URL,
+		Transport: "streamable-http",
+	})
+	if err != nil {
+		t.Fatalf("failed to connect mock server: %v", err)
+	}
+
+	// Build the routing index
+	if err := app.Router.Refresh(ctx); err != nil {
+		t.Fatalf("failed to refresh router: %v", err)
+	}
+
+	handler := &api{app: app, sessions: make(map[string]*streamEntry)}
+
+	// 1. Test Successful Tool Execution via /v1/execute
+	reqBody := `{"tool_id":"weather.forecast","arguments":{"location":"Bengaluru"}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/execute", bytes.NewBufferString(reqBody))
+	recorder := httptest.NewRecorder()
+	handler.execute(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d. Body: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var callRes map[string]any
+	if err := json.NewDecoder(recorder.Body).Decode(&callRes); err != nil {
+		t.Fatal(err)
+	}
+	content, ok := callRes["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("unexpected call response: %+v", callRes)
+	}
+	txtMap, ok := content[0].(map[string]any)
+	if !ok || txtMap["text"] != "The weather in Bengaluru is sunny" {
+		t.Fatalf("unexpected content text: %+v", content[0])
+	}
+
+	// 2. Test Argument Validation Failure
+	reqBodyInvalid := `{"tool_id":"weather.forecast","arguments":{"location":123}}` // location must be string
+	request = httptest.NewRequest(http.MethodPost, "/v1/execute", bytes.NewBufferString(reqBodyInvalid))
+	recorder = httptest.NewRecorder()
+	handler.execute(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for invalid args, got %d", recorder.Code)
+	}
+	var valErrResponse map[string]any
+	json.NewDecoder(recorder.Body).Decode(&valErrResponse)
+	if valErrResponse["error"] != "validation failed" {
+		t.Fatalf("expected validation failed error, got: %+v", valErrResponse)
+	}
+
+	// 3. Test Tool Not Found
+	reqBodyNotFound := `{"tool_id":"weather.missing","arguments":{}}`
+	request = httptest.NewRequest(http.MethodPost, "/v1/execute", bytes.NewBufferString(reqBodyNotFound))
+	recorder = httptest.NewRecorder()
+	handler.execute(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found for missing tool, got %d", recorder.Code)
+	}
+}
+

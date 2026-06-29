@@ -73,7 +73,18 @@ func (r *Registry) RemoveServer(server string) {
 	}
 }
 
+func (r *Registry) Lookup(id string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, exists := r.tools[id]
+	if !exists {
+		return Tool{}, false
+	}
+	return cloneTool(tool), true
+}
+
 func (r *Registry) Snapshot() Snapshot {
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	tools := make([]Tool, 0, len(r.tools))

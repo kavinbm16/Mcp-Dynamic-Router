@@ -29,6 +29,11 @@ type streamRequest struct {
 	Confidence float64 `json:"confidence,omitempty"`
 }
 
+type executeRequest struct {
+	ToolID    string         `json:"tool_id"`
+	Arguments map[string]any `json:"arguments"`
+}
+
 type streamEntry struct {
 	session  *streamrag.Session
 	lastSeen time.Time
@@ -71,6 +76,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", handler.health)
 	mux.HandleFunc("POST /v1/route", handler.route)
 	mux.HandleFunc("POST /v1/stream", handler.stream)
+	mux.HandleFunc("POST /v1/execute", handler.execute)
 
 	server := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
@@ -131,6 +137,41 @@ func (a *api) stream(response http.ResponseWriter, request *http.Request) {
 		a.deleteSession(input.SessionID)
 	}
 	writeJSON(response, http.StatusOK, prediction)
+}
+
+func (a *api) execute(response http.ResponseWriter, request *http.Request) {
+	var input executeRequest
+	if err := decodeJSON(response, request, &input); err != nil {
+		return
+	}
+	if input.ToolID == "" {
+		writeError(response, http.StatusBadRequest, fmt.Errorf("tool_id is required"))
+		return
+	}
+
+	tool, found := a.app.Registry.Lookup(input.ToolID)
+	if !found {
+		writeError(response, http.StatusNotFound, fmt.Errorf("tool %q not found", input.ToolID))
+		return
+	}
+
+	// Validate arguments against JSON Schema
+	if validationErrors := router.ValidateArguments(tool, input.Arguments); len(validationErrors) > 0 {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(response).Encode(map[string]any{
+			"error":             "validation failed",
+			"validation_errors": validationErrors,
+		})
+		return
+	}
+
+	result, err := a.app.Call(request.Context(), tool, input.Arguments)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (a *api) getSession(id string) *streamrag.Session {
