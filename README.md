@@ -284,6 +284,18 @@ Choose the cost/accuracy point your pipeline needs:
 - **Hybrid:** BM25 and embedding similarity fused together.
 - **Reranked:** hybrid retrieval plus a small constrained-output LLM over the shortlist.
 
+#### Score Fusion Formula
+
+When using hybrid routing, lexical and semantic scores are normalized and fused using your configured weights:
+
+1. **Normalize Scores**: For both lexical and semantic runs, individual scores are normalized by the maximum score in that set:
+   $$S_{norm} = \frac{S}{S_{max}}$$
+2. **Weight Fusing**: Normalized weights are computed as:
+   $$W_{lex\_norm} = \frac{W_{lex}}{W_{lex} + W_{sem}}, \quad W_{sem\_norm} = \frac{W_{sem}}{W_{lex} + W_{sem}}$$
+   $$S_{fused} = W_{lex\_norm} \cdot S_{lex\_norm} + W_{sem\_norm} \cdot S_{sem\_norm}$$
+3. **Reranker Interpolation**: If a stage-two reranker is enabled, the final score interpolates the fused score and the reranker score ($S_{rerank} \in [0, 1]$):
+   $$S_{final} = (1 - W_{reranker}) \cdot S_{fused} + W_{reranker} \cdot S_{rerank}$$
+
 ### Abstention
 
 The router returns:
@@ -293,6 +305,15 @@ The router returns:
 - `no_tool` when no candidate is strong enough.
 
 Wrong actions are not a latency optimization. Confidence thresholds must be calibrated on your held-out data.
+
+#### Calibrating the Decision Policy
+
+The policy uses two hyperparameters from your config to control routing behavior:
+
+| Parameter | Type | Default | Tuning Strategy |
+|---|---|---|---|
+| `MinConfidence` | float | `0.42` | **Raise** to reduce false-positive routings (e.g., routing random chat to tools). **Lower** if valid intents are getting classified as `no_tool`. |
+| `MinMargin` | float | `0.06` | **Raise** to enforce strict disambiguation (yields `clarify` if tools are close). **Lower** if similar tools are safe to execute interchangeably. |
 
 ## Optional local intelligence
 
@@ -373,13 +394,233 @@ A credible dataset includes confusing tool pairs, real ASR errors, no-tool reque
 
 ## HTTP API
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /healthz` | Process readiness. |
-| `POST /v1/route` | Route one final or partial utterance without session state. |
-| `POST /v1/stream` | Incremental Stream RAG keyed by `session_id`. |
-
 `routerd` binds to `127.0.0.1:8090` by default. Set `-listen` deliberately when exposing it beyond the local machine; authentication and TLS belong at the deployment boundary.
+
+### Endpoints
+
+#### `GET /healthz`
+Returns `200 OK` if the process is up and healthy.
+**Response**:
+```json
+{
+  "status": "ok"
+}
+```
+
+#### `POST /v1/route`
+Routes a single utterance without session state.
+**Request**:
+```json
+{
+  "utterance": "Will I need an umbrella in Bengaluru tomorrow?",
+  "context": "User timezone: Asia/Kolkata",
+  "final": true
+}
+```
+**Response**:
+```json
+{
+  "decision": "selected",
+  "confidence": 0.854,
+  "margin": 0.352,
+  "candidates": [
+    {
+      "tool": {
+        "id": "weather-service.get_forecast",
+        "server": "weather-service",
+        "name": "get_forecast",
+        "domain": "weather",
+        "description": "Domain: weather\nPurpose: Get forecast...",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "location": { "type": "string" }
+          },
+          "required": ["location"]
+        }
+      },
+      "score": 0.854,
+      "lexical_score": 0.9,
+      "semantic_score": 0.8,
+      "rank": 1
+    }
+  ],
+  "reason": "top candidate passed confidence and margin thresholds",
+  "trace": {
+    "registry_version": 1,
+    "domains": ["weather"],
+    "domain_latency": 1500000,
+    "select_latency": 2500000,
+    "total_latency": 4000000,
+    "used_embeddings": true,
+    "used_reranker": false
+  }
+}
+```
+*(Note: Latency values in `trace` are represented in nanoseconds.)*
+
+#### `POST /v1/stream`
+Routes incremental user transcripts linked to a session.
+**Request**:
+```json
+{
+  "session_id": "session-101",
+  "transcript": "check the weather in Bengaluru",
+  "confidence": 0.91,
+  "final": false
+}
+```
+**Response**:
+```json
+{
+  "triggered": true,
+  "final": false,
+  "stable": true,
+  "stability_count": 2,
+  "result": {
+    "decision": "selected",
+    "confidence": 0.854,
+    "margin": 0.352,
+    "candidates": [
+      {
+        "tool": {
+          "id": "weather-service.get_forecast",
+          "server": "weather-service",
+          "name": "get_forecast",
+          "domain": "weather",
+          "description": "Domain: weather\nPurpose: Get forecast...",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "location": { "type": "string" }
+            },
+            "required": ["location"]
+          }
+        },
+        "score": 0.854,
+        "lexical_score": 0.9,
+        "semantic_score": 0.8,
+        "rank": 1
+      }
+    ],
+    "reason": "top candidate passed confidence and margin thresholds",
+    "trace": {
+      "registry_version": 1,
+      "domains": ["weather"],
+      "domain_latency": 1500000,
+      "select_latency": 2500000,
+      "total_latency": 4000000,
+      "used_embeddings": true,
+      "used_reranker": false
+    }
+  }
+}
+```
+*(Note: Sending a request with `"final": true` automatically closes the session on the server; unused sessions expire after 2 minutes.)*
+
+## Voice Pipeline Blueprints
+
+### 1. Pipecat Integration (Python)
+
+If you are using Pipecat to build a voice agent, you can mirror transcriptions to `routerd` to handle real-time tool prefetching and execution.
+
+```python
+import aiohttp
+from pipecat.processors.frameworks.livekit import LiveKitTranscriptionProcessor
+
+class MCPRouterProcessor:
+    def __init__(self, sidecar_url="http://127.0.0.1:8090", session_id="call-session"):
+        self.url = f"{sidecar_url}/v1/stream"
+        self.session_id = session_id
+
+    async def handle_transcription(self, text: str, is_final: bool, confidence: float):
+        payload = {
+            "session_id": self.session_id,
+            "transcript": text,
+            "confidence": confidence,
+            "final": is_final
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # 1. Prefetch / Warm downstream resources if the route is stable
+                    if data.get("stable") and not data.get("final"):
+                        candidates = data["result"].get("candidates", [])
+                        if candidates:
+                            tool = candidates[0]["tool"]
+                            print(f"[Prefetch] Warming cache for: {tool['id']}")
+                    
+                    # 2. Execute tool when speech is committed
+                    if data.get("final"):
+                        result = data["result"]
+                        if result["decision"] == "selected":
+                            tool = result["candidates"][0]["tool"]
+                            print(f"[Commit] Dispatched tool: {tool['id']}")
+                            return tool
+```
+
+### 2. LiveKit Agents Integration (Python)
+
+In a standard LiveKit Python Agent, you can hook into user speech events to stream transcripts directly to the dynamic router:
+
+```python
+import aiohttp
+from livekit import agents
+
+async def setup_agent(ctx: agents.JobContext):
+    # Configure your standard voice agent
+    agent = agents.VoiceAgent(
+        # ...
+    )
+
+    session_id = ctx.job.id
+    sidecar_url = "http://127.0.0.1:8090/v1/stream"
+
+    # Track partial transcriptions
+    @agent.on("user_transcription")
+    def on_user_transcription(transcript: agents.Transcription):
+        async def send_partial():
+            payload = {
+                "session_id": session_id,
+                "transcript": transcript.text,
+                "confidence": transcript.confidence,
+                "final": False
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(sidecar_url, json=payload) as resp:
+                    if resp.status == 200:
+                        pred = await resp.json()
+                        if pred.get("stable"):
+                            # Optionally warm up client/cache
+                            pass
+        
+        # Dispatch the coroutine to send transcript asynchronously
+        ctx.create_task(send_partial())
+
+    # Handle final speech commitment
+    @agent.on("user_speech_committed")
+    def on_user_speech_committed(msg: agents.ChatMessage):
+        async def send_final():
+            payload = {
+                "session_id": session_id,
+                "transcript": msg.content,
+                "final": True
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(sidecar_url, json=payload) as resp:
+                    if resp.status == 200:
+                        pred = await resp.json()
+                        res = pred["result"]
+                        if res["decision"] == "selected":
+                            # Bind arguments and call target tool
+                            tool = res["candidates"][0]["tool"]
+                            print(f"Executing tool {tool['id']} for speech commit")
+
+        ctx.create_task(send_final())
+```
 
 ## Repository map
 
