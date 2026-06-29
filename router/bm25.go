@@ -19,10 +19,38 @@ func tokenize(text string) []string {
 	result := words[:0]
 	for _, word := range words {
 		if _, ignored := stopWords[word]; !ignored {
-			result = append(result, word)
+			stemmed := stem(word)
+			if stemmed != "" {
+				result = append(result, stemmed)
+			}
 		}
 	}
 	return result
+}
+
+func stem(word string) string {
+	if len(word) <= 3 {
+		return word
+	}
+	if strings.HasSuffix(word, "sses") {
+		return word[:len(word)-2]
+	}
+	if strings.HasSuffix(word, "ies") {
+		return word[:len(word)-3] + "i"
+	}
+	if strings.HasSuffix(word, "ing") {
+		return strings.TrimSuffix(word, "ing")
+	}
+	if strings.HasSuffix(word, "ed") {
+		return strings.TrimSuffix(word, "ed")
+	}
+	if strings.HasSuffix(word, "es") {
+		return strings.TrimSuffix(word, "es")
+	}
+	if strings.HasSuffix(word, "s") && !strings.HasSuffix(word, "ss") {
+		return word[:len(word)-1]
+	}
+	return word
 }
 
 type lexicalIndex struct {

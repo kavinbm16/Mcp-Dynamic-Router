@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 type compiledIndex struct {
@@ -26,12 +28,15 @@ type compiledIndex struct {
 // Router is safe for concurrent Route calls. Refresh creates a new immutable
 // index and swaps it in only after compilation succeeds.
 type Router struct {
-	registry *Registry
-	embedder Embedder
-	reranker Reranker
-	cfg      Config
-	mu       sync.RWMutex
-	index    *compiledIndex
+	registry   *Registry
+	embedder   Embedder
+	reranker   Reranker
+	cfg        Config
+	mu         sync.RWMutex
+	index      *compiledIndex
+	sf         singleflight.Group
+	embedCache map[string][]float32
+	cacheMu    sync.Mutex
 }
 
 func New(registry *Registry, embedder Embedder, cfg Config, options ...Option) *Router {
@@ -57,7 +62,7 @@ func New(registry *Registry, embedder Embedder, cfg Config, options ...Option) *
 	if cfg.RerankerWeight == 0 {
 		cfg.RerankerWeight = defaults.RerankerWeight
 	}
-	result := &Router{registry: registry, embedder: embedder, cfg: cfg}
+	result := &Router{registry: registry, embedder: embedder, cfg: cfg, embedCache: make(map[string][]float32)}
 	for _, option := range options {
 		option(result)
 	}
@@ -96,11 +101,11 @@ func (r *Router) Refresh(ctx context.Context) error {
 	index.domainLexical = newLexicalIndex(index.domainDocs)
 
 	if r.embedder != nil {
-		toolVectors, err := r.embedder.Embed(ctx, index.toolDocuments)
+		toolVectors, err := r.embedBatch(ctx, index.toolDocuments)
 		if err != nil {
 			return fmt.Errorf("embed tool descriptions: %w", err)
 		}
-		domainVectors, err := r.embedder.Embed(ctx, index.domainDocs)
+		domainVectors, err := r.embedBatch(ctx, index.domainDocs)
 		if err != nil {
 			return fmt.Errorf("embed domain descriptions: %w", err)
 		}
@@ -197,18 +202,62 @@ func (r *Router) semanticScores(ctx context.Context, query string, vectors [][]f
 	if r.embedder == nil || len(vectors) == 0 {
 		return make([]float64, len(vectors)), nil, false, nil
 	}
-	queryVectors, err := r.embedder.Embed(ctx, []string{query})
+	val, err, _ := r.sf.Do(query, func() (any, error) {
+		queryVectors, err := r.embedder.Embed(ctx, []string{query})
+		if err != nil {
+			return nil, fmt.Errorf("embed query: %w", err)
+		}
+		if len(queryVectors) != 1 {
+			return nil, fmt.Errorf("embedder returned %d query vectors", len(queryVectors))
+		}
+		return queryVectors[0], nil
+	})
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("embed query: %w", err)
+		return nil, nil, false, err
 	}
-	if len(queryVectors) != 1 {
-		return nil, nil, false, fmt.Errorf("embedder returned %d query vectors", len(queryVectors))
-	}
+	queryVector := val.([]float32)
 	scores := make([]float64, len(vectors))
 	for index, vector := range vectors {
-		scores[index] = cosine01(queryVectors[0], vector)
+		scores[index] = cosine01(queryVector, vector)
 	}
-	return scores, queryVectors[0], true, nil
+	return scores, queryVector, true, nil
+}
+
+func (r *Router) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	r.cacheMu.Lock()
+	if r.embedCache == nil {
+		r.embedCache = make(map[string][]float32)
+	}
+	results := make([][]float32, len(texts))
+	var misses []string
+	var missIndices []int
+	for idx, text := range texts {
+		if vec, found := r.embedCache[text]; found {
+			results[idx] = vec
+		} else {
+			misses = append(misses, text)
+			missIndices = append(missIndices, idx)
+		}
+	}
+	r.cacheMu.Unlock()
+
+	if len(misses) > 0 {
+		vectors, err := r.embedder.Embed(ctx, misses)
+		if err != nil {
+			return nil, err
+		}
+		if len(vectors) != len(misses) {
+			return nil, fmt.Errorf("embedder returned unexpected vector count: expected %d, got %d", len(misses), len(vectors))
+		}
+		r.cacheMu.Lock()
+		for idx, vec := range vectors {
+			originalIdx := missIndices[idx]
+			results[originalIdx] = vec
+			r.embedCache[misses[idx]] = vec
+		}
+		r.cacheMu.Unlock()
+	}
+	return results, nil
 }
 
 func (r *Router) weights(semantic bool) (float64, float64) {

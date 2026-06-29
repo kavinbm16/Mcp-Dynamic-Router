@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -48,6 +50,10 @@ type Client struct {
 	sessions           map[string]*session
 	elicitation        ElicitationConfig
 	elicitationHandler ElicitationHandler
+	configPath         string
+	lastModTime        time.Time
+	watcherCancel      context.CancelFunc
+	watcherWait        sync.WaitGroup
 }
 
 func New(registry *router.Registry, onToolsChanged func(context.Context) error, options ...Option) *Client {
@@ -98,6 +104,7 @@ func (c *Client) ConnectFile(ctx context.Context, configPath string) (ConnectRep
 			return report, fmt.Errorf("build routing index: %w", err)
 		}
 	}
+	c.startWatcher(configPath)
 	return report, nil
 }
 
@@ -201,6 +208,13 @@ func (c *Client) Call(ctx context.Context, tool router.Tool, arguments map[strin
 
 func (c *Client) Close() error {
 	c.mu.Lock()
+	if c.watcherCancel != nil {
+		c.watcherCancel()
+	}
+	c.mu.Unlock()
+	c.watcherWait.Wait()
+
+	c.mu.Lock()
 	defer c.mu.Unlock()
 	var first error
 	for name, holder := range c.sessions {
@@ -210,6 +224,61 @@ func (c *Client) Close() error {
 	}
 	c.sessions = make(map[string]*session)
 	return first
+}
+
+func (c *Client) startWatcher(configPath string) {
+	c.mu.Lock()
+	if c.watcherCancel != nil {
+		c.watcherCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.watcherCancel = cancel
+	c.configPath = configPath
+	if info, err := os.Stat(configPath); err == nil {
+		c.lastModTime = info.ModTime()
+	}
+	c.mu.Unlock()
+
+	c.watcherWait.Add(1)
+	go func() {
+		defer c.watcherWait.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.checkConfigChanges(ctx)
+			}
+		}
+	}()
+}
+
+func (c *Client) checkConfigChanges(ctx context.Context) {
+	c.mu.Lock()
+	path := c.configPath
+	lastMod := c.lastModTime
+	c.mu.Unlock()
+
+	if path == "" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	if !info.ModTime().After(lastMod) {
+		return
+	}
+
+	c.mu.Lock()
+	c.lastModTime = info.ModTime()
+	c.mu.Unlock()
+
+	log.Printf("[MCP Watcher] Config file %s changed; performing full reload...", path)
+	_ = c.Close()
+	_, _ = c.ConnectFile(ctx, path)
 }
 
 func (c *Client) get(serverName string) (*session, error) {

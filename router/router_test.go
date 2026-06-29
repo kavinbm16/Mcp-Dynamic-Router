@@ -108,3 +108,16 @@ func weatherTool() Tool {
 func structured(domain, purpose, invoke, parameters, limitations, example string) string {
 	return "Domain: " + domain + "\nPurpose: " + purpose + ".\nInvoke when: Call this tool when " + invoke + ".\nParameters: " + parameters + ".\nLimitations: " + limitations + ".\nExample: User: " + example + " Arguments: {}"
 }
+
+func TestStemmingTokenization(t *testing.T) {
+	tokens := tokenize("scheduling calendar meetings")
+	expected := []string{"schedul", "calendar", "meeting"}
+	if len(tokens) != len(expected) {
+		t.Fatalf("expected %v, got %v", expected, tokens)
+	}
+	for i := range tokens {
+		if tokens[i] != expected[i] {
+			t.Errorf("at index %d: expected %s, got %s", i, expected[i], tokens[i])
+		}
+	}
+}
