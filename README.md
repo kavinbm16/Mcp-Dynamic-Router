@@ -1,14 +1,31 @@
 # MCP Dynamic Router
 
-### Give your voice pipeline thousands of tools. Let the model see only the right few.
+<div align="center">
+  <img src="assets/banner.jpg" alt="MCP Dynamic Router Banner" width="800px" style="border-radius: 8px; margin-bottom: 20px;" />
+</div>
 
-MCP Dynamic Router is a description-first, two-stage MCP tool router written in Go. It connects to dynamic MCP servers, turns partial or final utterances into ranked tool decisions, and abstains when the evidence is weak.
+<p align="center">
+  <a href="https://github.com/kavinbm16/Mcp-Dynamic-Router/actions"><img src="https://github.com/kavinbm16/Mcp-Dynamic-Router/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://goreportcard.com/report/github.com/kavinbm16/Mcp-Dynamic-Router"><img src="https://goreportcard.com/badge/github.com/kavinbm16/Mcp-Dynamic-Router" alt="Go Report Card"></a>
+  <a href="https://pkg.go.dev/github.com/kavinbm16/mcp-dynamic-router"><img src="https://pkg.go.dev/badge/github.com/kavinbm16/mcp-dynamic-router.svg" alt="Go Reference"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/kavinbm16/Mcp-Dynamic-Router.svg" alt="License"></a>
+</p>
 
-Use it as:
+<h3 align="center">Give your voice pipeline thousands of tools. Let the model see only the right few.</h3>
 
-- a Go package inside your agent;
-- a local HTTP sidecar beside Python, TypeScript, LiveKit, Pipecat, or any other pipeline;
-- an incremental Stream RAG layer that begins retrieval while the user is still speaking.
+<p align="center">
+  <b>MCP Dynamic Router</b> is a high-performance, description-first, two-stage Model Context Protocol (MCP) tool router written in Go. It connects to dynamic MCP servers, translates streaming voice transcripts into ranked tool routing decisions on the fly, and automatically abstains when confidence is low.
+</p>
+
+---
+
+## ⚡ Key Capabilities
+
+* **🔌 Dynamic Server Orchestration** — Concurrently connects to multiple MCP servers via HTTP/SSE, handling live hot-reloads when tool schemas are updated.
+* **📈 Stream RAG Engine** — Starts routing partial transcripts *while the user is still speaking* to warm downstream connections and prefetch read-only tools safely.
+* **🎯 Hybrid Scoring & Reranking** — Blends BM25 lexical scoring, semantic vector embeddings, and LLM-based reranking for precise, low-latency selection.
+* **🛡️ Secure Abstention Policy** — Abstains from routing when inputs are ambiguous or below confidence thresholds to prevent errant mutations.
+* **🚀 Multi-Language Compatibility** — Embed directly in your Go codebase or deploy as a lightweight local HTTP sidecar companion to Python, TypeScript, LiveKit, or Pipecat agents.
 
 ```text
 "Could you check the weather in Bengaluru tom—"
@@ -19,9 +36,10 @@ Use it as:
 "...tomorrow morning?" ─┴── final transcript → confirm route → bind → execute
 ```
 
-The router is provider-neutral. It does not require a particular STT, LLM, TTS, realtime API, or agent framework.
+The router is completely **provider-neutral**; it integrates seamlessly with any STT, LLM, TTS, realtime voice API, or agent framework.
 
-> **Status:** working early release. Registry discovery, auditing, two-stage routing, optional embeddings and LLM reranking, Stream RAG, MCP execution, evaluation tools, and the HTTP sidecar are implemented and tested. “Best router” is a benchmark target—not a README adjective.
+> **Status:** Active development. Dynamic registry discovery, automated tool auditing, hybrid retrieval, Stream RAG, schema validation, and HTTP sidecar are fully implemented and tested.
+
 
 ## The 60-second path
 
