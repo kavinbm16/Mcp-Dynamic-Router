@@ -15,12 +15,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// 1. Initialize the Dynamic Router App
-	// We point it to our mcp.toml file containing the server registry configurations.
-	app := dynamicrouter.New(dynamicrouter.Options{
-		MCPConfigPath: "mcp.toml",
-		RouterConfig:  router.DefaultConfig(),
-	})
+	// 1. Initialize the Dynamic Router App using the Fluent Builder Pattern
+	app := dynamicrouter.NewBuilder().
+		WithMCPConfigPath("mcp.toml").
+		Build()
 	defer app.Close()
 
 	// 2. Start the App (connects to all configured downstream MCP servers)
@@ -60,21 +58,21 @@ func main() {
 		fmt.Printf("Execution Result: %+v\n", callRes.Content)
 	}
 
-	// 4. Stream RAG Session Example (Incremental Speech Partials)
+	// 4. Stream RAG Session Example (Incremental Speech Partials) using Fluent StreamBuilder
 	// We simulate a user speaking, triggering partial updates before committing.
 	fmt.Println("\n--- Stream RAG Speech Pipeline ---")
-	session := app.NewStream(streamrag.DefaultOptions(), streamrag.Hooks{
-		OnPrediction: func(p streamrag.Prediction) {
+	session := app.NewStreamBuilder().
+		OnPrediction(func(p streamrag.Prediction) {
 			fmt.Printf("[Stream Hook] Partial stable=%v, top_tool=%s\n", p.Stable, p.Result.Candidates[0].Tool.ID)
-		},
-		OnPrefetch: func(ctx context.Context, tool router.Tool) error {
+		}).
+		OnPrefetch(func(ctx context.Context, tool router.Tool) error {
 			fmt.Printf("[Stream Hook] Prefetching read-only tool to warm connection: %s\n", tool.ID)
 			return nil
-		},
-		OnCommit: func(p streamrag.Prediction) {
+		}).
+		OnCommit(func(p streamrag.Prediction) {
 			fmt.Printf("[Stream Hook] Speech Committed! Final tool selected: %s\n", p.Result.Candidates[0].Tool.ID)
-		},
-	})
+		}).
+		Build()
 	defer session.Close()
 
 	// Simulate speech partial 1

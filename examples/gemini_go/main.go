@@ -21,10 +21,10 @@ func main() {
 		log.Fatal("GEMINI_API_KEY environment variable is required")
 	}
 
-	// 1. Initialize the Dynamic Router App
-	app := dynamicrouter.New(dynamicrouter.Options{
-		MCPConfigPath: "mcp.toml",
-	})
+	// 1. Initialize the Dynamic Router App using the Fluent Builder Pattern
+	app := dynamicrouter.NewBuilder().
+		WithMCPConfigPath("mcp.toml").
+		Build()
 	defer app.Close()
 
 	report, err := app.Start(ctx)

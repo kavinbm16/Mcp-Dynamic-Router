@@ -20,10 +20,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	// 1. Initialize the Dynamic Router App
-	app := dynamicrouter.New(dynamicrouter.Options{
-		MCPConfigPath: "mcp.toml",
-	})
+	// 1. Initialize the Dynamic Router App using the Fluent Builder Pattern
+	app := dynamicrouter.NewBuilder().
+		WithMCPConfigPath("mcp.toml").
+		Build()
 	defer app.Close()
 
 	// 2. Start downstream MCP server connections

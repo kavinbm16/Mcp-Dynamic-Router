@@ -64,15 +64,12 @@ func main() {
 	myEmbedder := &CustomEmbedder{Dimension: 384}
 	myReranker := &CustomReranker{}
 
-	// 2. Configure dynamic router options using the custom interfaces
-	options := dynamicrouter.Options{
-		MCPConfigPath: "mcp.toml",
-		RouterConfig:  router.DefaultConfig(),
-		Embedder:      myEmbedder,
-		Reranker:      myReranker,
-	}
-
-	app := dynamicrouter.New(options)
+	// 2. Configure dynamic router options using the Fluent Builder Pattern
+	app := dynamicrouter.NewBuilder().
+		WithMCPConfigPath("mcp.toml").
+		WithEmbedder(myEmbedder).
+		WithReranker(myReranker).
+		Build()
 	defer app.Close()
 
 	// 3. Register dummy tools in the registry for mock verification
