@@ -13,8 +13,20 @@
 
 <h3 align="center">Give your voice pipeline thousands of tools. Let the model see only the right few.</h3>
 
-<p align="center">
-MCP Dynamic Router is a high-performance, description-first, two-stage Model Context Protocol (MCP) tool router written in Go. It connects to dynamic MCP servers, translates streaming voice transcripts into ranked tool routing decisions on the fly, and automatically abstains when confidence is low.
+---
+
+## ❓ Why MCP Dynamic Router?
+
+If you hardcode 10+ downstream MCP servers in your `claude_config.json`:
+* **Huge Context Window Overhead:** You force the LLM to process schemas and parameter definitions for all 100+ tools on every turn, driving up latency and token costs.
+* **Accuracy Degradation:** Registering too many tools introduces semantic confusion, causing the LLM to hallucinate arguments or pick the wrong tool.
+* **Static Lifecycle:** Adding or removing a tool requires restarting the LLM session.
+
+**MCP Dynamic Router** acts as an intelligent middleware layer:
+1. **Centralized Lifecycle:** Concurrently connects and orchestrates multiple MCP servers (SSE/HTTP), dynamically hot-reloading tool schemas in real-time.
+2. **Sub-1ms Latency (Fast-Path):** Exact lexical matches bypass semantic vector embeddings and LLM reranking calls entirely, returning in `<1ms`.
+3. **Stream RAG Prefetching:** Evaluates partial speech transcripts *while the user is still speaking* to warm connections and prefetch read-only tools safely.
+4. **Security & Custom Scoping:** Restricts tool exposure on a per-request basis and safely abstains from execution when query confidence is low.
 
 ```mermaid
 graph TD
@@ -58,30 +70,34 @@ The router is completely **provider-neutral**; it integrates seamlessly with any
 > **Status:** Active development. Dynamic registry discovery, automated tool auditing, hybrid retrieval, Stream RAG, schema validation, and HTTP sidecar are fully implemented and tested.
 
 
-## The 60-second path
+## 🚀 30-Second Quickstart
 
-### 1. Describe your MCP servers
+Try out the dynamic router locally with zero configuration. We provide a mock server command that hosts two dummy MCP services (weather and calculator) and auto-generates `mcp-mock.toml` for you.
 
-Create `mcp.toml`:
-
-```toml
-[elicitation]
-enabled = true
-auto_accept = false
-timeout = 30
-
-[[servers]]
-name = "weather-service"
-url = "http://localhost:23202/weather/mcp"
-transport = "streamable-http"
-
-[[servers]]
-name = "wellness-service"
-url = "http://localhost:23002/wellness/mcp"
-transport = "streamable-http"
+### 1. Spin up the Mock MCP Servers
+Open a terminal and run:
+```bash
+go run ./cmd/mock-servers
 ```
+*(This starts a Mock Weather Service on `:8091` and a Mock Calculator Service on `:8092`, writing a local `mcp-mock.toml` file.)*
 
-Add another server by adding another block. No keyword maps and no code changes.
+### 2. Start the Dynamic Router Daemon
+Open a second terminal and run:
+```bash
+go run ./cmd/routerd -mcp mcp-mock.toml
+```
+*(This boots the dynamic gateway sidecar on `:8090` and connects to both downstream mock servers.)*
+
+### 3. Verify Routing
+Open a third terminal and test routing with a simple HTTP request:
+```bash
+curl -s -X POST http://localhost:8090/v1/route \
+  -H "Content-Type: application/json" \
+  -d '{"utterance": "What is the weather in New York?"}'
+```
+You will receive a JSON response showing the weather service selected, completely bypassing the calculator service!
+
+---
 
 ### 2A. Drop it into Go
 
@@ -613,10 +629,17 @@ For real-time voice, streaming STT/ASR, and embedded application pipelines, you 
 * [ ] OpenTelemetry and Prometheus instrumentation.
 * [ ] Voxa integration with perceived-latency measurements.
 
-## Contributing
+## 🤝 Contributing & Good First Issues
 
-The highest-value contributions are difficult tool pairs, labelled spoken utterances, real ASR failures, and reproducible latency results.
+We welcome contributions! Whether you want to add middleware telemetry, write new voice agent wrappers (e.g. for LiveKit or Pipecat), or implement new custom embedding caches, check out our [CONTRIBUTING.md](CONTRIBUTING.md) guide for details on how to get started.
 
+High-priority opportunities include:
+* **Prometheus & OpenTelemetry integrations** (adding latency and decision metrics).
+* **SQLite-backed embedding caching** (persisting vectors across restarts).
+* **Custom LLM adapters** (Hugging Face, Cohere, OpenAI).
+* **LiveKit / Pipecat adapter middlewares** in Python.
+
+To run verification commands:
 ```bash
 go test -race ./...
 go vet ./...
