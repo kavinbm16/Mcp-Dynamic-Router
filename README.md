@@ -575,6 +575,7 @@ For real-time voice, streaming STT/ASR, and embedded application pipelines, you 
 * **Pipecat (Python):** [pipecat_router.py](examples/pipecat/pipecat_router.py) — Demonstrates how to pipe speech transcription updates to `routerd` to handle real-time prefetching and committed tool execution.
 * **LiveKit Agents (Python):** [livekit_agent.py](examples/livekit/livekit_agent.py) — Hook into user speech transcription and commitment events to stream partials and execute final tool decisions.
 * **OpenAI Realtime API (Python):** [openai_realtime_session.py](examples/openai_realtime/openai_realtime_session.py) — Interface with an OpenAI Realtime WebSockets session, intercepting `invoke_tool` intents and executing them via the sidecar.
+* **Gemini Multimodal Live API (Python):** [gemini_live.py](examples/gemini/gemini_live.py) — Interface with the Gemini Multimodal Live API via WebSockets using the `google-genai` SDK, mapping user intents to dynamic tool execution.
 
 ## Repository map
 
