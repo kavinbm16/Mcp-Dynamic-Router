@@ -87,6 +87,57 @@ func TestRouterAbstainsForUnrelatedQuery(t *testing.T) {
 	}
 }
 
+func TestRouterHandlesMultiIntentQueries(t *testing.T) {
+	registry := NewRegistry()
+	tools := []Tool{
+		weatherTool(),
+		{ID: "calendar.create_event", Server: "calendar", Domain: "calendar", Name: "create_event", Description: structured("calendar", "Create a calendar event", "the user asks to schedule a meeting", "title and start time", "Does not find weather", "Schedule lunch tomorrow at noon"), InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	if err := registry.ReplaceServer("weather", tools[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.ReplaceServer("calendar", tools[1:]); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultConfig()
+	config.DomainTopK = 2
+	router := New(registry, nil, config)
+	if err := router.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compound query
+	query := "Will I need an umbrella in Bengaluru today? And also schedule lunch tomorrow at noon"
+	result, err := router.Route(context.Background(), RouteRequest{Utterance: query, Final: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Decision != DecisionSelected {
+		t.Fatalf("expected selected decision, got %+v", result)
+	}
+
+	if len(result.Candidates) != 2 {
+		t.Fatalf("expected 2 candidates (one for weather, one for calendar), got %d", len(result.Candidates))
+	}
+
+	// Weather candidate should be one of them and calendar should be the other
+	hasWeather := false
+	hasCalendar := false
+	for _, c := range result.Candidates {
+		if c.Tool.ID == "weather.get_forecast" {
+			hasWeather = true
+		}
+		if c.Tool.ID == "calendar.create_event" {
+			hasCalendar = true
+		}
+	}
+
+	if !hasWeather || !hasCalendar {
+		t.Fatalf("expected both weather and calendar tools to be resolved, got weather=%v calendar=%v", hasWeather, hasCalendar)
+	}
+}
+
 func TestValidateArguments(t *testing.T) {
 	tool := weatherTool()
 	errors := ValidateArguments(tool, map[string]any{"location": 42, "units": "kelvin"})

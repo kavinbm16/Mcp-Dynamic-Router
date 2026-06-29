@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -123,6 +124,45 @@ func (r *Router) Refresh(ctx context.Context) error {
 }
 
 func (r *Router) Route(ctx context.Context, request RouteRequest) (RouteResult, error) {
+	fragments := splitIntents(request.Utterance)
+	if len(fragments) <= 1 {
+		return r.routeSingle(ctx, request)
+	}
+
+	log.Printf("[Router] Multi-intent detected: %d fragments: %v", len(fragments), fragments)
+
+	results := make([]RouteResult, len(fragments))
+	type routeJobResult struct {
+		index  int
+		result RouteResult
+		err    error
+	}
+	ch := make(chan routeJobResult, len(fragments))
+	var wg sync.WaitGroup
+	for idx, frag := range fragments {
+		wg.Add(1)
+		go func(i int, f string) {
+			defer wg.Done()
+			req := request
+			req.Utterance = f
+			res, err := r.routeSingle(ctx, req)
+			ch <- routeJobResult{index: i, result: res, err: err}
+		}(idx, frag)
+	}
+	wg.Wait()
+	close(ch)
+
+	for job := range ch {
+		if job.err != nil {
+			return RouteResult{}, job.err
+		}
+		results[job.index] = job.result
+	}
+
+	return mergeRouteResults(results), nil
+}
+
+func (r *Router) routeSingle(ctx context.Context, request RouteRequest) (RouteResult, error) {
 	started := time.Now()
 	r.mu.RLock()
 	index := r.index
@@ -346,4 +386,142 @@ func cosine01(left, right []float32) float64 {
 	}
 	cosine := dot / math.Sqrt(leftNorm*rightNorm)
 	return math.Max(0, math.Min(1, (cosine+1)/2))
+}
+
+var intentSplitRe = regexp.MustCompile(
+	`(?i)\s*,?\s+(?:and(?:\s+also)?|also|then|after\s+that|while\s+you(?:'re|\s+are)\s+at\s+it)\s+`,
+)
+
+func splitIntents(query string) []string {
+	query = strings.TrimSpace(query)
+	matches := intentSplitRe.FindAllStringIndex(query, -1)
+	if len(matches) == 0 {
+		return []string{query}
+	}
+
+	var out []string
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		fragment := strings.TrimSpace(query[last:start])
+
+		after := strings.TrimSpace(query[end:])
+		if len(after) > 0 && after[0] >= '0' && after[0] <= '9' {
+			continue
+		}
+
+		if fragment != "" {
+			out = append(out, fragment)
+			last = end
+		}
+	}
+
+	final := strings.TrimSpace(query[last:])
+	if final != "" {
+		out = append(out, final)
+	}
+
+	if len(out) == 0 {
+		return []string{query}
+	}
+	return out
+}
+
+func mergeRouteResults(results []RouteResult) RouteResult {
+	var selected []RouteResult
+	var clarifying []RouteResult
+	var noTool []RouteResult
+
+	for _, res := range results {
+		switch res.Decision {
+		case DecisionSelected:
+			selected = append(selected, res)
+		case DecisionClarify:
+			clarifying = append(clarifying, res)
+		default:
+			noTool = append(noTool, res)
+		}
+	}
+
+	var merged RouteResult
+	var mergedCandidates []Candidate
+	var reasons []string
+
+	if len(selected) > 0 {
+		merged.Decision = DecisionSelected
+		// Collect only the TOP candidate (Rank 1) from each successful fragment to avoid flooding
+		for _, res := range selected {
+			if len(res.Candidates) > 0 {
+				mergedCandidates = append(mergedCandidates, res.Candidates[0])
+			}
+			reasons = append(reasons, res.Reason)
+		}
+		// Sort merged candidates by score descending
+		sort.SliceStable(mergedCandidates, func(i, j int) bool {
+			return mergedCandidates[i].Score > mergedCandidates[j].Score
+		})
+		// Re-assign ranks
+		for i := range mergedCandidates {
+			mergedCandidates[i].Rank = i + 1
+		}
+		merged.Candidates = mergedCandidates
+		merged.Reason = "multi-intent: " + strings.Join(reasons, "; ")
+		if len(mergedCandidates) > 0 {
+			merged.Confidence = mergedCandidates[0].Score
+			if len(mergedCandidates) > 1 {
+				merged.Margin = mergedCandidates[0].Score - mergedCandidates[1].Score
+			} else {
+				merged.Margin = mergedCandidates[0].Score
+			}
+		}
+	} else if len(clarifying) > 0 {
+		merged.Decision = DecisionClarify
+		for _, res := range clarifying {
+			mergedCandidates = append(mergedCandidates, res.Candidates...)
+			reasons = append(reasons, res.Reason)
+		}
+		merged.Candidates = mergedCandidates
+		merged.Reason = "multi-intent clarification: " + strings.Join(reasons, "; ")
+		if len(mergedCandidates) > 0 {
+			merged.Confidence = mergedCandidates[0].Score
+		}
+	} else {
+		merged.Decision = DecisionNoTool
+		for _, res := range noTool {
+			reasons = append(reasons, res.Reason)
+		}
+		merged.Reason = "multi-intent no tool: " + strings.Join(reasons, "; ")
+	}
+
+	// Merge traces
+	var totalLatency time.Duration
+	var domainLatency time.Duration
+	var selectLatency time.Duration
+	var usedEmbeddings bool
+	var usedReranker bool
+	var registryVersion uint64
+
+	for _, res := range results {
+		totalLatency += res.Trace.TotalLatency
+		domainLatency += res.Trace.DomainLatency
+		selectLatency += res.Trace.SelectLatency
+		if res.Trace.UsedEmbeddings {
+			usedEmbeddings = true
+		}
+		if res.Trace.UsedReranker {
+			usedReranker = true
+		}
+		registryVersion = res.Trace.RegistryVersion
+	}
+
+	merged.Trace = Trace{
+		RegistryVersion: registryVersion,
+		TotalLatency:    totalLatency,
+		DomainLatency:   domainLatency,
+		SelectLatency:   selectLatency,
+		UsedEmbeddings:  usedEmbeddings,
+		UsedReranker:    usedReranker,
+	}
+
+	return merged
 }
