@@ -181,11 +181,14 @@ func TestRouterBM25FastPath(t *testing.T) {
 
 	embedder := &trackingEmbedder{}
 	config := DefaultConfig()
-	config.BM25FastPath = 1.0 // Set very low so any query matching vocab triggers fast-path
+	config.BM25FastPath = 0.1 // Set very low so any query matching vocab triggers fast-path
 	router := New(registry, embedder, config)
 	if err := router.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+
+	// Reset called flag since Refresh invokes the embedder to build the index
+	embedder.called = false
 
 	result, err := router.Route(context.Background(), RouteRequest{
 		Utterance: "get weather forecast",
@@ -193,6 +196,8 @@ func TestRouterBM25FastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Logf("Decision: %s, Candidates: %+v, Reason: %s", result.Decision, result.Candidates, result.Reason)
 
 	if result.Decision != DecisionSelected || result.Candidates[0].Tool.ID != "weather.get_forecast" {
 		t.Fatalf("unexpected result: %+v", result)
