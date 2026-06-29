@@ -1,0 +1,17 @@
+# MCP servers. Add [[servers]] blocks as needed.
+# The capability router indexes tools from descriptions — no keyword config required.
+
+[elicitation]
+enabled = true
+auto_accept = false
+timeout = 30
+
+[[servers]]
+name = "weather-service"
+url = "http://192.168.0.139:23202/store/apps/weather/weather/v1/weatherservice/mcp"
+transport = "streamable-http"
+
+[[servers]]
+name = "wellness-service"
+url = "http://192.168.0.139:23002/store/apps/health/wellness/v1/wellnessservice/mcp"
+transport = "streamable-http"

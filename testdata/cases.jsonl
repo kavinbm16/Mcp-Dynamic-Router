@@ -1,0 +1,5 @@
+{"utterance":"Will I need an umbrella in Bengaluru today?","expected_tool":"weather.get_forecast"}
+{"utterance":"What's the temperature in Mysuru?","expected_tool":"weather.get_forecast"}
+{"utterance":"Schedule lunch tomorrow at noon","context":"Timezone is Asia/Kolkata","expected_tool":"calendar.create_event"}
+{"utterance":"Add project review to my calendar Friday at 3 PM","expected_tool":"calendar.create_event"}
+{"utterance":"Tell me a bedtime story","expected_tool":""}

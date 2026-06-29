@@ -1,0 +1,19 @@
+[
+  {
+    "id": "weather.get_forecast",
+    "server": "weather",
+    "name": "get_forecast",
+    "domain": "weather",
+    "description": "Domain: weather\nPurpose: Get current conditions and a short-term weather forecast for a location.\nInvoke when: Call this tool when the user asks about temperature, rain, wind, or upcoming weather.\nParameters: location is a city or place name; units is either metric or imperial.\nLimitations: It cannot provide historical climate records or emergency warnings.\nExample: User: Will I need an umbrella in Bengaluru today? Arguments: {\"location\":\"Bengaluru\",\"units\":\"metric\"}",
+    "input_schema": {"type":"object","properties":{"location":{"type":"string","description":"City or place name"},"units":{"type":"string","description":"Unit system","enum":["metric","imperial"]}},"required":["location"],"additionalProperties":false},
+    "read_only": true
+  },
+  {
+    "id": "calendar.create_event",
+    "server": "calendar",
+    "name": "create_event",
+    "domain": "calendar",
+    "description": "Domain: calendar\nPurpose: Create a new event in the user's calendar.\nInvoke when: Call this tool when the user explicitly asks to schedule or add a calendar event.\nParameters: title is the event name; start_time is an ISO-8601 datetime; timezone is an IANA timezone.\nLimitations: It cannot search existing events and must not be called without user intent to create an event.\nExample: User: Schedule lunch tomorrow at noon. Arguments: {\"title\":\"Lunch\",\"start_time\":\"2026-06-30T12:00:00+05:30\",\"timezone\":\"Asia/Kolkata\"}",
+    "input_schema": {"type":"object","properties":{"title":{"type":"string","description":"Event title"},"start_time":{"type":"string","description":"ISO-8601 start time"},"timezone":{"type":"string","description":"IANA timezone"}},"required":["title","start_time"],"additionalProperties":false}
+  }
+]
