@@ -569,107 +569,12 @@ Routes incremental user transcripts linked to a session.
 
 ## Voice Pipeline Blueprints
 
-### 1. Pipecat Integration (Python)
+For real-time voice and streaming STT/ASR pipelines, you can run the sidecar `routerd` and communicate via the HTTP endpoints. 
 
-If you are using Pipecat to build a voice agent, you can mirror transcriptions to `routerd` to handle real-time tool prefetching and execution.
+Below are production blueprints demonstrating how to integrate the dynamic router for safe prefetching and committed tool execution:
 
-```python
-import aiohttp
-from pipecat.processors.frameworks.livekit import LiveKitTranscriptionProcessor
-
-class MCPRouterProcessor:
-    def __init__(self, sidecar_url="http://127.0.0.1:8090", session_id="call-session"):
-        self.url = f"{sidecar_url}/v1/stream"
-        self.session_id = session_id
-
-    async def handle_transcription(self, text: str, is_final: bool, confidence: float):
-        payload = {
-            "session_id": self.session_id,
-            "transcript": text,
-            "confidence": confidence,
-            "final": is_final
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(self.url, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    
-                    # 1. Prefetch / Warm downstream resources if the route is stable
-                    if data.get("stable") and not data.get("final"):
-                        candidates = data["result"].get("candidates", [])
-                        if candidates:
-                            tool = candidates[0]["tool"]
-                            print(f"[Prefetch] Warming cache for: {tool['id']}")
-                    
-                    # 2. Execute tool when speech is committed
-                    if data.get("final"):
-                        result = data["result"]
-                        if result["decision"] == "selected":
-                            tool = result["candidates"][0]["tool"]
-                            print(f"[Commit] Dispatched tool: {tool['id']}")
-                            return tool
-```
-
-### 2. LiveKit Agents Integration (Python)
-
-In a standard LiveKit Python Agent, you can hook into user speech events to stream transcripts directly to the dynamic router:
-
-```python
-import aiohttp
-from livekit import agents
-
-async def setup_agent(ctx: agents.JobContext):
-    # Configure your standard voice agent
-    agent = agents.VoiceAgent(
-        # ...
-    )
-
-    session_id = ctx.job.id
-    sidecar_url = "http://127.0.0.1:8090/v1/stream"
-
-    # Track partial transcriptions
-    @agent.on("user_transcription")
-    def on_user_transcription(transcript: agents.Transcription):
-        async def send_partial():
-            payload = {
-                "session_id": session_id,
-                "transcript": transcript.text,
-                "confidence": transcript.confidence,
-                "final": False
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(sidecar_url, json=payload) as resp:
-                    if resp.status == 200:
-                        pred = await resp.json()
-                        if pred.get("stable"):
-                            # Optionally warm up client/cache
-                            pass
-        
-        # Dispatch the coroutine to send transcript asynchronously
-        ctx.create_task(send_partial())
-
-    # Handle final speech commitment
-    @agent.on("user_speech_committed")
-    def on_user_speech_committed(msg: agents.ChatMessage):
-        async def send_final():
-            payload = {
-                "session_id": session_id,
-                "transcript": msg.content,
-                "final": True
-            }
-            async with aiohttp.ClientSession() as session:
-                async with session.post(sidecar_url, json=payload) as resp:
-                    if resp.status == 200:
-                        pred = await resp.json()
-                        res = pred["result"]
-                        if res["decision"] == "selected":
-                            # Bind arguments and call target tool
-                            tool = res["candidates"][0]["tool"]
-                            print(f"Executing tool {tool['id']} for speech commit")
-
-        ctx.create_task(send_final())
-```
+* **Pipecat (Python):** [pipecat_router.py](examples/pipecat/pipecat_router.py) — Demonstrates how to pipe speech transcription updates to `routerd` to handle real-time prefetching and committed tool execution.
+* **LiveKit Agents (Python):** [livekit_agent.py](examples/livekit/livekit_agent.py) — Hook into user speech transcription and commitment events to stream partials and execute final tool decisions.
 
 ## Repository map
 
