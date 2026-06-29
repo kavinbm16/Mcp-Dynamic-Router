@@ -567,14 +567,14 @@ Routes incremental user transcripts linked to a session.
 ```
 *(Note: Sending a request with `"final": true` automatically closes the session on the server; unused sessions expire after 2 minutes.)*
 
-## Voice Pipeline Blueprints
+## Integration Blueprints & Examples
 
-For real-time voice and streaming STT/ASR pipelines, you can run the sidecar `routerd` and communicate via the HTTP endpoints. 
+For real-time voice, streaming STT/ASR, and embedded application pipelines, you can find full runnable implementation blueprints under the `/examples` directory:
 
-Below are production blueprints demonstrating how to integrate the dynamic router for safe prefetching and committed tool execution:
-
+* **Go Application Embed:** [main.go](examples/go_embed/main.go) — Demonstrates how to import the `dynamicrouter` library directly in Go, reload configurations, and run stateless `Route` or stateful `streamrag.Session` calls without a sidecar.
 * **Pipecat (Python):** [pipecat_router.py](examples/pipecat/pipecat_router.py) — Demonstrates how to pipe speech transcription updates to `routerd` to handle real-time prefetching and committed tool execution.
 * **LiveKit Agents (Python):** [livekit_agent.py](examples/livekit/livekit_agent.py) — Hook into user speech transcription and commitment events to stream partials and execute final tool decisions.
+* **OpenAI Realtime API (Python):** [openai_realtime_session.py](examples/openai_realtime/openai_realtime_session.py) — Interface with an OpenAI Realtime WebSockets session, intercepting `invoke_tool` intents and executing them via the sidecar.
 
 ## Repository map
 
