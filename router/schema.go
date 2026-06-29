@@ -88,12 +88,11 @@ func matchesType(value any, expected string) bool {
 }
 
 func isInteger(value any) bool {
-	switch value.(type) {
+	switch val := value.(type) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
 	case float64:
-		number := value.(float64)
-		return number == float64(int64(number))
+		return val == float64(int64(val))
 	default:
 		return false
 	}
