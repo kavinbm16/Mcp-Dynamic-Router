@@ -14,8 +14,25 @@
 <h3 align="center">Give your voice pipeline thousands of tools. Let the model see only the right few.</h3>
 
 <p align="center">
-  <b>MCP Dynamic Router</b> is a high-performance, description-first, two-stage Model Context Protocol (MCP) tool router written in Go. It connects to dynamic MCP servers, translates streaming voice transcripts into ranked tool routing decisions on the fly, and automatically abstains when confidence is low.
-</p>
+MCP Dynamic Router is a high-performance, description-first, two-stage Model Context Protocol (MCP) tool router written in Go. It connects to dynamic MCP servers, translates streaming voice transcripts into ranked tool routing decisions on the fly, and automatically abstains when confidence is low.
+
+```mermaid
+graph TD
+    User([User Prompt / Speech]) -->|1. Audio / Text| Client[Client Agent / App]
+    
+    subgraph Gateway ["MCP Dynamic Router Gateway (routerd)"]
+        Client -->|2. Route / Stream| API[HTTP endpoints: /v1/route, /v1/stream]
+        API -->|3. Select Candidates| Routing[Two-Stage Routing Engine]
+        Client -->|4. Execute Tool| API
+        API -->|5. Validate Schema| Validator{JSON Schema Validator}
+        API -->|6. Dispatch Call| Downstream[SSE / HTTP MCP Clients]
+    end
+    
+    subgraph Servers ["Downstream Servers"]
+        Downstream -->|7. JSON-RPC| S1[Weather Server]
+        Downstream -->|7. JSON-RPC| S2[Wellness Server]
+    end
+```
 
 ---
 
@@ -117,7 +134,21 @@ curl -s http://127.0.0.1:8090/v1/route \
   }'
 ```
 
-That is the complete integration boundary: JSON in, inspectable decision out.
+Then execute the selected tool (the sidecar proxies the call to the downstream MCP server and automatically validates arguments against the tool's JSON schema):
+
+```bash
+curl -s http://127.0.0.1:8090/v1/execute \
+  -H 'content-type: application/json' \
+  -d '{
+    "tool_id": "weather-service.get_forecast",
+    "arguments": {
+      "location": "Bengaluru",
+      "units": "metric"
+    }
+  }'
+```
+
+That is the complete integration boundary: JSON in, routing decision and tool execution output out. The client does not need any MCP-specific connection code.
 
 ## Stream RAG: route before the user stops speaking
 
