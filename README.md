@@ -98,7 +98,7 @@ import (
 
 func main() {
     ctx := context.Background()
-    app := dynamicrouter.New(dynamicrouter.Options{MCPConfigPath: "mcp.toml"})
+    app := dynamicrouter.NewBuilder().WithMCPConfigPath("mcp.toml").Build()
     defer app.Close()
 
     report, err := app.Start(ctx)
@@ -196,19 +196,19 @@ Each response contains `triggered`, `stable`, `stability_count`, the routing dec
 ### Directly inside Go
 
 ```go
-session := app.NewStream(streamrag.DefaultOptions(), streamrag.Hooks{
-    OnPrediction: func(p streamrag.Prediction) {
+session := app.NewStreamBuilder().
+    OnPrediction(func(p streamrag.Prediction) {
         log.Printf("partial route stable=%v decision=%s", p.Stable, p.Result.Decision)
-    },
-    OnPrefetch: func(ctx context.Context, tool router.Tool) error {
+    }).
+    OnPrefetch(func(ctx context.Context, tool router.Tool) error {
         // Warm a cache or downstream connection. Never execute a mutation here.
         return warm(tool)
-    },
-    OnCommit: func(p streamrag.Prediction) {
+    }).
+    OnCommit(func(p streamrag.Prediction) {
         // The transcript is final. Continue to argument binding and policy.
         commit(p.Result)
-    },
-})
+    }).
+    Build()
 defer session.Close()
 
 session.Submit(ctx, streamrag.Event{
@@ -379,17 +379,17 @@ go run ./cmd/routerd \
 Or configure them in Go:
 
 ```go
-app := dynamicrouter.New(dynamicrouter.Options{
-    MCPConfigPath: "mcp.toml",
-    Embedder: &embedding.Ollama{
+app := dynamicrouter.NewBuilder().
+    WithMCPConfigPath("mcp.toml").
+    WithEmbedder(&embedding.Ollama{
         BaseURL: "http://localhost:11434",
         Model:   "nomic-embed-text",
-    },
-    Reranker: &selector.Ollama{
+    }).
+    WithReranker(&selector.Ollama{
         BaseURL: "http://localhost:11434",
         Model:   "qwen3:4b",
-    },
-})
+    }).
+    Build()
 ```
 
 Both interfaces are replaceable. Implement `router.Embedder` or `router.Reranker` to use another local model, hosted API, or specialized classifier.
